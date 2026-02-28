@@ -1,0 +1,76 @@
+MULTIBOXER CHANGELOG
+====================
+
+Version 2.0.1 - February 27, 2026 @ 11:45 PM
+----------------------------------------------
+
+REMOVED: Alt+Tab Keyboard Hook
+
+Problem:
+  The global Alt+Tab keyboard hook (low-level WH_KEYBOARD_LL) was
+  interfering with normal keyboard input, causing keyboard breakage.
+
+Solution:
+  Completely removed all Alt+Tab interception and the global keyboard
+  hook system. Window swapping remains available via the UI Swap button.
+
+Changes:
+  - Removed GlobalHotkeyManager class (tiled_manager.py)
+  - Removed KBDLLHOOKSTRUCT class (tiled_manager.py)
+  - Removed _setup_hotkeys(), _on_alt_tab(), _is_foreground_managed_eq_window() (tiled_app.py)
+  - Removed swap_requested Signal and hotkey_manager instance (tiled_app.py)
+  - Removed hotkey_manager.stop() from closeEvent and emergency cleanup
+  - Removed unused imports: ctypes, ctypes.wintypes, win32api, Signal, GlobalHotkeyManager
+  - Updated button label, status text, and about dialog to remove Alt+Tab references
+
+Files Modified:
+  - multiboxer/tiled_manager.py (removed GlobalHotkeyManager, KBDLLHOOKSTRUCT, unused imports)
+  - multiboxer/tiled_app.py (removed all Alt+Tab hotkey code, updated UI text)
+
+Impact:
+  - No more keyboard interference from the app
+  - Normal Alt+Tab behavior fully preserved for Windows
+  - Swap still works via the "Swap Windows" button in the UI
+
+---
+
+Version 2.0.0 - February 27, 2026
+---------------------------------
+
+MAJOR REWRITE: Simplified Window Management
+
+Problem:
+  The original implementation used window decoration stripping (removing 
+  title bars/borders) which caused multiple issues:
+  - Random keyboard assignments persisting until system reboot
+  - Window sizing corruption after multiple swaps  
+  - Complex state tracking that got out of sync
+  - Game/OS restoring decorations unexpectedly
+
+Solution:
+  Complete removal of all window style manipulation. The app now only
+  repositions windows using SetWindowPos - no decoration stripping.
+
+Changes:
+  - Removed BORDERLESS_STYLE constant and all style manipulation
+  - Removed _stripped_windows tracking set
+  - Removed _strip_decorations(), _restore_decorations()
+  - Removed is_window_borderless(), _force_correct_window()
+  - Simplified position_window() to only reposition, not modify styles
+  - Added SW_RESTORE for minimized windows before repositioning
+  - Added WM_SIZE notification after resize for game viewport updates
+  - Added crash-safe keyboard hook cleanup (atexit, signal handlers)
+  - Added GetAsyncKeyState for real-time Alt key state checking
+  - Added is_eqgame_window() validation to prevent affecting non-EQ windows
+  - Added minimal error logging to errors.txt (clears each session)
+
+Files Modified:
+  - multiboxer/tiled_manager.py (complete rewrite, ~50% code reduction)
+  - multiboxer/tiled_app.py (cleanup handlers, exception handling)
+  - multiboxer/error_logger.py (new - minimal diagnostic logging)
+
+Impact:
+  - More stable window management
+  - No keyboard corruption on crash
+  - Clean separation between EQ windows and system windows
+  - Smaller codebase, easier to maintain
