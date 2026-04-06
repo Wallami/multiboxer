@@ -96,10 +96,19 @@ class LayoutPreview(QFrame):
         self.preview_rect = QFrame(self)
         self.preview_rect.setGeometry(150, 5, 45, 35)
         self.preview_rect.setStyleSheet("background-color: #FF9800; border: 1px solid #F57C00;")
-        self.preview_label = QLabel("PV", self.preview_rect)
+        self.preview_label = QLabel("PV1", self.preview_rect)
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_label.setGeometry(0, 0, 45, 35)
         self.preview_label.setStyleSheet("color: white; font-size: 10px;")
+
+        # Preview2 area (small, below preview)
+        self.preview2_rect = QFrame(self)
+        self.preview2_rect.setGeometry(150, 44, 45, 35)
+        self.preview2_rect.setStyleSheet("background-color: #9C27B0; border: 1px solid #7B1FA2;")
+        self.preview2_label = QLabel("PV2", self.preview2_rect)
+        self.preview2_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview2_label.setGeometry(0, 0, 45, 35)
+        self.preview2_label.setStyleSheet("color: white; font-size: 10px;")
 
 
 class TiledMultiboxerApp(QMainWindow):
@@ -117,8 +126,8 @@ class TiledMultiboxerApp(QMainWindow):
         self._drag_pos: QPoint | None = None
         
         self.setWindowTitle("EQ Tiled Multiboxer")
-        self.setMinimumSize(320, 700)
-        self.resize(320, 780)
+        self.setMinimumSize(320, 850)
+        self.resize(320, 950)
         
         # Make window frameless but keep it on top
         self.setWindowFlags(
@@ -244,7 +253,7 @@ class TiledMultiboxerApp(QMainWindow):
         # Preview slot
         preview_row = QHBoxLayout()
         preview_row.setSpacing(6)
-        self.preview_indicator = StatusIndicator("Preview Window")
+        self.preview_indicator = StatusIndicator("Preview Window 1")
         preview_row.addWidget(self.preview_indicator, 1)
         self.grab_preview_btn = QPushButton("Grab")
         self.grab_preview_btn.setFixedWidth(60)
@@ -252,6 +261,18 @@ class TiledMultiboxerApp(QMainWindow):
         self.grab_preview_btn.clicked.connect(self._grab_to_preview)
         preview_row.addWidget(self.grab_preview_btn)
         slots_layout.addLayout(preview_row)
+
+        # Preview2 slot
+        preview2_row = QHBoxLayout()
+        preview2_row.setSpacing(6)
+        self.preview2_indicator = StatusIndicator("Preview Window 2")
+        preview2_row.addWidget(self.preview2_indicator, 1)
+        self.grab_preview2_btn = QPushButton("Grab")
+        self.grab_preview2_btn.setFixedWidth(60)
+        self.grab_preview2_btn.setFixedHeight(30)
+        self.grab_preview2_btn.clicked.connect(self._grab_to_preview2)
+        preview2_row.addWidget(self.grab_preview2_btn)
+        slots_layout.addLayout(preview2_row)
         
         main_layout.addWidget(slots_group)
         
@@ -285,15 +306,61 @@ class TiledMultiboxerApp(QMainWindow):
         
         main_layout.addWidget(controls_group)
 
-        # Live preview of the inactive (preview-slot) game window
-        preview_group = QGroupBox("Live Preview (click to swap)")
+        # Live preview slots (click to swap with main)
+        preview_group = QGroupBox("Preview Slots (click to swap)")
         preview_layout = QVBoxLayout(preview_group)
         preview_layout.setContentsMargins(6, 16, 6, 6)
+        preview_layout.setSpacing(4)
+
+        # Slot 1 (Main window)
+        slot1_header = QHBoxLayout()
+        pv_main_label = QLabel("Slot 1 (Main)")
+        pv_main_label.setStyleSheet("color: #2196F3; font-size: 10px; font-weight: bold;")
+        slot1_header.addWidget(pv_main_label)
+        self.slot1_status = QLabel("○ Inactive")
+        self.slot1_status.setStyleSheet("color: #888; font-size: 10px;")
+        self.slot1_status.setAlignment(Qt.AlignmentFlag.AlignRight)
+        slot1_header.addWidget(self.slot1_status)
+        preview_layout.addLayout(slot1_header)
+
+        self.live_preview_main = DwmPreviewWidget()
+        self.live_preview_main.setMinimumHeight(80)
+        self.live_preview_main.clicked.connect(self._focus_main)
+        preview_layout.addWidget(self.live_preview_main, 1)
+
+        # Slot 2 (Preview 1)
+        slot2_header = QHBoxLayout()
+        pv1_label = QLabel("Slot 2")
+        pv1_label.setStyleSheet("color: #FF9800; font-size: 10px; font-weight: bold;")
+        slot2_header.addWidget(pv1_label)
+        self.slot2_status = QLabel("○ Inactive")
+        self.slot2_status.setStyleSheet("color: #888; font-size: 10px;")
+        self.slot2_status.setAlignment(Qt.AlignmentFlag.AlignRight)
+        slot2_header.addWidget(self.slot2_status)
+        preview_layout.addLayout(slot2_header)
+
         self.live_preview = DwmPreviewWidget()
-        self.live_preview.setMinimumHeight(140)
-        self.live_preview.clicked.connect(self._do_swap)
-        preview_layout.addWidget(self.live_preview, 1)  # stretch to fill
-        main_layout.addWidget(preview_group, 1)  # give live preview the extra space
+        self.live_preview.setMinimumHeight(80)
+        self.live_preview.clicked.connect(lambda: self._do_swap_with(1))
+        preview_layout.addWidget(self.live_preview, 1)
+
+        # Slot 3 (Preview 2)
+        slot3_header = QHBoxLayout()
+        pv2_label = QLabel("Slot 3")
+        pv2_label.setStyleSheet("color: #9C27B0; font-size: 10px; font-weight: bold;")
+        slot3_header.addWidget(pv2_label)
+        self.slot3_status = QLabel("○ Inactive")
+        self.slot3_status.setStyleSheet("color: #888; font-size: 10px;")
+        self.slot3_status.setAlignment(Qt.AlignmentFlag.AlignRight)
+        slot3_header.addWidget(self.slot3_status)
+        preview_layout.addLayout(slot3_header)
+
+        self.live_preview2 = DwmPreviewWidget()
+        self.live_preview2.setMinimumHeight(80)
+        self.live_preview2.clicked.connect(lambda: self._do_swap_with(2))
+        preview_layout.addWidget(self.live_preview2, 1)
+
+        main_layout.addWidget(preview_group, 1)  # give live previews the extra space
         
         # Status bar
         self.status_label = QLabel("Click Swap to switch windows")
@@ -366,14 +433,21 @@ class TiledMultiboxerApp(QMainWindow):
         preview_height = int(geom.height() * 0.35)
         preview_x = geom.x() + main_width
         preview_y = geom.y()
+
+        # Preview2 below preview
+        preview2_height = int(geom.height() * 0.35)
+        preview2_x = geom.x() + main_width
+        preview2_y = geom.y() + preview_height
         
         self.manager.set_layout(
             (main_x, main_y, main_width, main_height),
-            (preview_x, preview_y, preview_width, preview_height)
+            (preview_x, preview_y, preview_width, preview_height),
+            (preview2_x, preview2_y, preview_width, preview2_height)
         )
         
-        # Position this control window below preview
-        self.move(preview_x, preview_y + preview_height + 10)
+        # Position this control window at bottom-right corner of the screen
+        self.move(geom.x() + geom.width() - self.width(),
+                  geom.y() + geom.height() - self.height())
         
     def _setup_timers(self):
         """Setup refresh timers."""
@@ -388,47 +462,61 @@ class TiledMultiboxerApp(QMainWindow):
         self.ui_timer.start(500)
         
     def _do_swap(self):
-        """Perform window swap."""
-        log.log_info("_do_swap triggered")
+        """Perform window swap (swaps main with preview slot 1)."""
+        self._do_swap_with(1)
+
+    def _do_swap_with(self, slot_index: int):
+        """Perform targeted pairwise swap between main and a specific preview slot."""
+        log.log_info(f"_do_swap_with(slot_index={slot_index}) triggered")
 
         # Notify active diagnostic captures about the swap event
         for session in [self._squish_session, self._resize_session]:
             if session is not None:
-                main_h, prev_h = self._current_hwnds()
+                main_h, prev_h, prev2_h = self._current_hwnds()
                 session.add_event(
-                    f"SWAP TRIGGERED  main_hwnd={main_h}  preview_hwnd={prev_h}"
+                    f"SWAP TRIGGERED  slot={slot_index}  main_hwnd={main_h}  preview_hwnd={prev_h}  preview2_hwnd={prev2_h}"
                 )
 
         try:
-            if self.manager.swap_windows():
+            if self.manager.swap_main_with_preview_slot(slot_index):
                 # Post-swap diagnostic snapshots
                 for session in [self._squish_session, self._resize_session]:
                     if session is not None:
-                        new_main, new_prev = self._current_hwnds()
+                        new_main, new_prev, new_prev2 = self._current_hwnds()
                         session.add_event(
-                            f"SWAP COMPLETE   new_main={new_main}  new_preview={new_prev}"
+                            f"SWAP COMPLETE   new_main={new_main}  new_preview={new_prev}  new_preview2={new_prev2}"
                         )
                         self._capture_tick(session)
 
-                self.status_label.setText("Windows swapped!")
+                self.status_label.setText(f"Swapped main \u2194 slot {slot_index + 1}!")
                 self.status_label.setStyleSheet("color: #4CAF50;")
                 self._update_ui()
 
                 # Update live preview in a deferred call so the Qt event
-                # loop can process any pending events first.  This avoids
-                # DWM API calls running while the win32 message queue is
-                # still settling from the swap.
+                # loop can process any pending events first.
                 QTimer.singleShot(100, self._update_live_preview)
 
-                log.log_info("_do_swap completed successfully")
+                log.log_info(f"_do_swap_with(slot_index={slot_index}) completed successfully")
             else:
-                self.status_label.setText("Cannot swap - need 2 windows")
+                self.status_label.setText(f"Cannot swap - need main and slot {slot_index + 1} windows")
                 self.status_label.setStyleSheet("color: #FF9800;")
-                log.log_warning("_do_swap failed - swap_windows returned False")
+                log.log_warning(f"_do_swap_with(slot_index={slot_index}) failed")
         except Exception as e:
-            log.log_exception("_do_swap")
+            log.log_exception("_do_swap_with")
             self.status_label.setText(f"Swap error: {e}")
             self.status_label.setStyleSheet("color: #f44336;")
+
+    def _focus_main(self):
+        """Focus the main window when its preview is clicked."""
+        if self.manager.main_slot and self.manager.main_slot.hwnd:
+            try:
+                hwnd = self.manager.main_slot.hwnd
+                if not self.manager.is_hung_window(hwnd):
+                    win32gui.SetForegroundWindow(hwnd)
+                    self.status_label.setText("Focused main window")
+                    self.status_label.setStyleSheet("color: #2196F3;")
+            except Exception as e:
+                log.log_warning(f"_focus_main failed: {e}")
             
     def _grab_to_main(self):
         """Grab first available eqgame window to main slot."""
@@ -436,8 +524,8 @@ class TiledMultiboxerApp(QMainWindow):
         log.log_info(f"_grab_to_main: found {len(windows)} EQ windows: {windows}")
         
         # Filter out windows already in slots
-        preview_hwnd = self.manager.preview_slot.hwnd if self.manager.preview_slot else None
-        available = [w for w in windows if w != preview_hwnd]
+        assigned = self.manager._get_all_assigned_hwnds()
+        available = [w for w in windows if w not in assigned]
         
         if not available:
             log.log_warning("_grab_to_main: no available windows after filtering")
@@ -462,9 +550,9 @@ class TiledMultiboxerApp(QMainWindow):
         windows = self.manager.find_eqgame_windows()
         log.log_info(f"_grab_to_preview: found {len(windows)} EQ windows: {windows}")
         
-        # Filter out windows already in main
-        main_hwnd = self.manager.main_slot.hwnd if self.manager.main_slot else None
-        available = [w for w in windows if w != main_hwnd]
+        # Filter out windows already in slots
+        assigned = self.manager._get_all_assigned_hwnds()
+        available = [w for w in windows if w not in assigned]
         
         if not available:
             log.log_warning("_grab_to_preview: no available windows after filtering")
@@ -483,6 +571,33 @@ class TiledMultiboxerApp(QMainWindow):
         else:
             log.log_error(f"_grab_to_preview: FAILED to assign hwnd={hwnd}", include_trace=False)
             self.preview_indicator.set_error("Failed to grab window")
+
+    def _grab_to_preview2(self):
+        """Grab first available eqgame window to preview2 slot."""
+        windows = self.manager.find_eqgame_windows()
+        log.log_info(f"_grab_to_preview2: found {len(windows)} EQ windows: {windows}")
+        
+        # Filter out windows already in slots
+        assigned = self.manager._get_all_assigned_hwnds()
+        available = [w for w in windows if w not in assigned]
+        
+        if not available:
+            log.log_warning("_grab_to_preview2: no available windows after filtering")
+            QMessageBox.information(self, "No Windows",
+                "No available eqgame.exe windows found.")
+            return
+            
+        # Use first available
+        hwnd = available[0]
+        log.log_info(f"_grab_to_preview2: attempting to assign hwnd={hwnd}")
+        if self.manager.assign_to_preview2(hwnd):
+            log.log_info(f"_grab_to_preview2: SUCCESS assigned hwnd={hwnd}")
+            self.status_label.setText(f"Grabbed to preview2: HWND {hwnd}")
+            self._update_ui()
+            self._update_live_preview()
+        else:
+            log.log_error(f"_grab_to_preview2: FAILED to assign hwnd={hwnd}", include_trace=False)
+            self.preview2_indicator.set_error("Failed to grab window")
             
     def _release_all(self):
         """Release all managed windows after user confirmation."""
@@ -497,7 +612,10 @@ class TiledMultiboxerApp(QMainWindow):
         self.manager.release_all()
         self.main_indicator.set_empty()
         self.preview_indicator.set_empty()
+        self.preview2_indicator.set_empty()
+        self.live_preview_main.clear_source()
         self.live_preview.clear_source()
+        self.live_preview2.clear_source()
         self.status_label.setText("All windows released")
 
     def _on_preserve_size_toggled(self, checked: bool) -> None:
@@ -528,9 +646,10 @@ class TiledMultiboxerApp(QMainWindow):
         try:
             main_hwnd = self.manager.main_slot.hwnd if self.manager.main_slot else None
             preview_hwnd = self.manager.preview_slot.hwnd if self.manager.preview_slot else None
+            preview2_hwnd = self.manager.preview2_slot.hwnd if self.manager.preview2_slot else None
             
             # Only log if at least one slot is empty
-            if main_hwnd and preview_hwnd:
+            if main_hwnd and preview_hwnd and preview2_hwnd:
                 return
             
             eq_windows = self.manager.find_eqgame_windows()
@@ -538,10 +657,10 @@ class TiledMultiboxerApp(QMainWindow):
                 return
             
             # There are EQ windows but at least one slot is unassigned
-            assigned = [h for h in [main_hwnd, preview_hwnd] if h is not None]
+            assigned = [h for h in [main_hwnd, preview_hwnd, preview2_hwnd] if h is not None]
             unassigned = [w for w in eq_windows if w not in assigned]
             if unassigned:
-                slot_status = f"main_hwnd={main_hwnd}, preview_hwnd={preview_hwnd}"
+                slot_status = f"main_hwnd={main_hwnd}, preview_hwnd={preview_hwnd}, preview2_hwnd={preview2_hwnd}"
                 window_list = ", ".join(str(w) for w in eq_windows)
                 log.log_warning(
                     f"DIAGNOSTIC: {len(unassigned)} EQ window(s) unassigned. "
@@ -577,16 +696,74 @@ class TiledMultiboxerApp(QMainWindow):
                 self.preview_indicator.set_empty()
         else:
             self.preview_indicator.set_empty()
+
+        # Preview2 slot
+        if self.manager.preview2_slot and self.manager.preview2_slot.hwnd:
+            hwnd = self.manager.preview2_slot.hwnd
+            if self.manager.is_valid_window(hwnd):
+                title = self.manager.get_window_title(hwnd)
+                self.preview2_indicator.set_active(title, hwnd)
+            else:
+                log.log_warning(f"_update_ui: preview2 slot hwnd={hwnd} failed is_valid_window check - clearing assignment")
+                self.manager.preview2_slot.hwnd = None
+                self.preview2_indicator.set_empty()
+        else:
+            self.preview2_indicator.set_empty()
             
-        # Update swap button state
+        # Update preview slot status labels
+        if self.manager.main_slot and self.manager.main_slot.hwnd:
+            self.slot1_status.setText("● Active")
+            self.slot1_status.setStyleSheet("color: #4CAF50; font-size: 10px;")
+        else:
+            self.slot1_status.setText("○ Inactive")
+            self.slot1_status.setStyleSheet("color: #888; font-size: 10px;")
+
+        if self.manager.preview_slot and self.manager.preview_slot.hwnd:
+            self.slot2_status.setText("● Active")
+            self.slot2_status.setStyleSheet("color: #4CAF50; font-size: 10px;")
+        else:
+            self.slot2_status.setText("○ Inactive")
+            self.slot2_status.setStyleSheet("color: #888; font-size: 10px;")
+
+        if self.manager.preview2_slot and self.manager.preview2_slot.hwnd:
+            self.slot3_status.setText("● Active")
+            self.slot3_status.setStyleSheet("color: #4CAF50; font-size: 10px;")
+        else:
+            self.slot3_status.setText("○ Inactive")
+            self.slot3_status.setStyleSheet("color: #888; font-size: 10px;")
+
+        # Update swap button state - need main + at least one preview
         both_filled = bool(
             self.manager.main_slot and self.manager.main_slot.hwnd and
-            self.manager.preview_slot and self.manager.preview_slot.hwnd
+            (
+                (self.manager.preview_slot and self.manager.preview_slot.hwnd) or
+                (self.manager.preview2_slot and self.manager.preview2_slot.hwnd)
+            )
         )
         self.swap_btn.setEnabled(both_filled)
 
     def _update_live_preview(self) -> None:
-        """Point the DWM live preview at the current preview-slot window."""
+        """Point the DWM live previews at the current slot windows."""
+        # Main slot preview
+        try:
+            main_hwnd = (
+                self.manager.main_slot.hwnd
+                if self.manager.main_slot
+                else None
+            )
+            if main_hwnd and self.manager.is_valid_window(main_hwnd):
+                if self.live_preview_main.source_hwnd != main_hwnd:
+                    self.live_preview_main.set_source(main_hwnd)
+            else:
+                self.live_preview_main.clear_source()
+        except Exception as e:
+            log.log_warning(f"_update_live_preview error (main): {e}")
+            try:
+                self.live_preview_main.clear_source()
+            except Exception:
+                pass
+
+        # Preview slot 1
         try:
             preview_hwnd = (
                 self.manager.preview_slot.hwnd
@@ -594,15 +771,33 @@ class TiledMultiboxerApp(QMainWindow):
                 else None
             )
             if preview_hwnd and self.manager.is_valid_window(preview_hwnd):
-                # Skip DWM re-registration if the source hasn't changed
                 if self.live_preview.source_hwnd != preview_hwnd:
                     self.live_preview.set_source(preview_hwnd)
             else:
                 self.live_preview.clear_source()
         except Exception as e:
-            log.log_warning(f"_update_live_preview error: {e}")
+            log.log_warning(f"_update_live_preview error (preview1): {e}")
             try:
                 self.live_preview.clear_source()
+            except Exception:
+                pass
+
+        # Preview slot 2
+        try:
+            preview2_hwnd = (
+                self.manager.preview2_slot.hwnd
+                if self.manager.preview2_slot
+                else None
+            )
+            if preview2_hwnd and self.manager.is_valid_window(preview2_hwnd):
+                if self.live_preview2.source_hwnd != preview2_hwnd:
+                    self.live_preview2.set_source(preview2_hwnd)
+            else:
+                self.live_preview2.clear_source()
+        except Exception as e:
+            log.log_warning(f"_update_live_preview error (preview2): {e}")
+            try:
+                self.live_preview2.clear_source()
             except Exception:
                 pass
     
@@ -641,12 +836,19 @@ class TiledMultiboxerApp(QMainWindow):
             lines.append(f"Preview Slot HWND: {ps.hwnd}")
         else:
             lines.append("Preview Slot: Not configured")
+
+        if self.manager.preview2_slot:
+            p2s = self.manager.preview2_slot
+            lines.append(f"Preview2 Slot Target: x={p2s.x}, y={p2s.y}, w={p2s.width}, h={p2s.height}")
+            lines.append(f"Preview2 Slot HWND: {p2s.hwnd}")
+        else:
+            lines.append("Preview2 Slot: Not configured")
         
         # Actual window states
         lines.append("")
         lines.append("=== ACTUAL WINDOW STATES ===")
         
-        for slot_name, slot in [("Main", self.manager.main_slot), ("Preview", self.manager.preview_slot)]:
+        for slot_name, slot in [("Main", self.manager.main_slot), ("Preview", self.manager.preview_slot), ("Preview2", self.manager.preview2_slot)]:
             if slot and slot.hwnd:
                 hwnd = slot.hwnd
                 lines.append(f"")
@@ -715,9 +917,8 @@ class TiledMultiboxerApp(QMainWindow):
         lines.append("")
         lines.append("=== OTHER EQ WINDOWS ===")
         other_windows = self.manager.find_eqgame_windows()
-        main_hwnd = self.manager.main_slot.hwnd if self.manager.main_slot else None
-        preview_hwnd = self.manager.preview_slot.hwnd if self.manager.preview_slot else None
-        unassigned = [w for w in other_windows if w != main_hwnd and w != preview_hwnd]
+        assigned = self.manager._get_all_assigned_hwnds()
+        unassigned = [w for w in other_windows if w not in assigned]
         
         if unassigned:
             for hwnd in unassigned:
@@ -747,29 +948,30 @@ class TiledMultiboxerApp(QMainWindow):
             "Tiled Multiboxer v2.0\n\n"
             "Simple tiled desktop manager for EverQuest multiboxing.\n\n"
             "Features:\n"
-            "- Positions game windows on desktop\n"
-            "- Swap button to switch between main and preview\n"
+            "- Positions up to 3 game windows on desktop\n"
+            "- Swap button to rotate between main and previews\n"
             "- No window embedding - stable and reliable\n\n"
             "Usage:\n"
-            "1. Launch two EQ clients\n"
+            "1. Launch up to three EQ clients\n"
             "2. Click 'Grab' to assign windows\n"
-            "3. Click 'Swap Windows' to switch focus"
+            "3. Click 'Swap Windows' to rotate focus"
         )
         
     # ------------------------------------------------------------------
     # Diagnostic capture helpers
     # ------------------------------------------------------------------
 
-    def _current_hwnds(self) -> tuple[int | None, int | None]:
-        """Return (main_hwnd, preview_hwnd) for the current slot state."""
+    def _current_hwnds(self) -> tuple[int | None, int | None, int | None]:
+        """Return (main_hwnd, preview_hwnd, preview2_hwnd) for the current slot state."""
         main_hwnd = self.manager.main_slot.hwnd if self.manager.main_slot else None
         preview_hwnd = self.manager.preview_slot.hwnd if self.manager.preview_slot else None
-        return main_hwnd, preview_hwnd
+        preview2_hwnd = self.manager.preview2_slot.hwnd if self.manager.preview2_slot else None
+        return main_hwnd, preview_hwnd, preview2_hwnd
 
     def _capture_tick(self, session: CaptureSession) -> None:
         """Take one snapshot of every managed window and append to *session*."""
-        main_hwnd, preview_hwnd = self._current_hwnds()
-        for hwnd, role in [(main_hwnd, "main"), (preview_hwnd, "preview")]:
+        main_hwnd, preview_hwnd, preview2_hwnd = self._current_hwnds()
+        for hwnd, role in [(main_hwnd, "main"), (preview_hwnd, "preview"), (preview2_hwnd, "preview2")]:
             if hwnd is not None:
                 snap = capture_snapshot(hwnd, role)
                 if snap is not None:
@@ -788,8 +990,8 @@ class TiledMultiboxerApp(QMainWindow):
         self._squish_session = CaptureSession(session_type="squish", start_time=time.time())
         self._squish_session.add_event("Capture started")
 
-        main_hwnd, preview_hwnd = self._current_hwnds()
-        self._squish_session.add_event(f"main_hwnd={main_hwnd}  preview_hwnd={preview_hwnd}")
+        main_hwnd, preview_hwnd, preview2_hwnd = self._current_hwnds()
+        self._squish_session.add_event(f"main_hwnd={main_hwnd}  preview_hwnd={preview_hwnd}  preview2_hwnd={preview2_hwnd}")
 
         # Initial snapshot
         self._capture_tick(self._squish_session)
@@ -831,8 +1033,8 @@ class TiledMultiboxerApp(QMainWindow):
 
         session.add_event("Capture stopped")
         # Final snapshot
-        main_hwnd, preview_hwnd = self._current_hwnds()
-        for hwnd, role in [(main_hwnd, "main"), (preview_hwnd, "preview")]:
+        main_hwnd, preview_hwnd, preview2_hwnd = self._current_hwnds()
+        for hwnd, role in [(main_hwnd, "main"), (preview_hwnd, "preview"), (preview2_hwnd, "preview2")]:
             if hwnd is not None:
                 snap = capture_snapshot(hwnd, role)
                 if snap is not None:
@@ -857,8 +1059,8 @@ class TiledMultiboxerApp(QMainWindow):
         self._resize_session = CaptureSession(session_type="resize", start_time=time.time())
         self._resize_session.add_event("Capture started")
 
-        main_hwnd, preview_hwnd = self._current_hwnds()
-        self._resize_session.add_event(f"main_hwnd={main_hwnd}  preview_hwnd={preview_hwnd}")
+        main_hwnd, preview_hwnd, preview2_hwnd = self._current_hwnds()
+        self._resize_session.add_event(f"main_hwnd={main_hwnd}  preview_hwnd={preview_hwnd}  preview2_hwnd={preview2_hwnd}")
 
         # Initial snapshot
         self._capture_tick(self._resize_session)
@@ -900,8 +1102,8 @@ class TiledMultiboxerApp(QMainWindow):
 
         session.add_event("Capture stopped")
         # Final snapshot
-        main_hwnd, preview_hwnd = self._current_hwnds()
-        for hwnd, role in [(main_hwnd, "main"), (preview_hwnd, "preview")]:
+        main_hwnd, preview_hwnd, preview2_hwnd = self._current_hwnds()
+        for hwnd, role in [(main_hwnd, "main"), (preview_hwnd, "preview"), (preview2_hwnd, "preview2")]:
             if hwnd is not None:
                 snap = capture_snapshot(hwnd, role)
                 if snap is not None:
@@ -921,7 +1123,9 @@ class TiledMultiboxerApp(QMainWindow):
         """Handle window close."""
         log.log_info("Application closing - cleaning up")
         try:
+            self.live_preview_main.clear_source()
             self.live_preview.clear_source()
+            self.live_preview2.clear_source()
             self.manager.release_all()
             log.log_info("Cleanup complete")
         except Exception as e:
@@ -1020,6 +1224,7 @@ def main():
     # must be done after show() so the native HWND is realised).
     top_hwnd = int(window.winId())
     window.live_preview.set_top_level_hwnd(top_hwnd)
+    window.live_preview2.set_top_level_hwnd(top_hwnd)
     log.log_info(f"Top-level HWND for DWM preview: {top_hwnd}")
     
     log.log_info("Entering Qt event loop")

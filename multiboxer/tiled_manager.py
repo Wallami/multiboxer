@@ -45,14 +45,18 @@ class TiledWindowManager:
     def __init__(self):
         self.main_slot: WindowSlot | None = None
         self.preview_slot: WindowSlot | None = None
+        self.preview2_slot: WindowSlot | None = None
         self._swap_callback: Callable[[], None] | None = None
         self.preserve_size: bool = True  # When True, swap only changes position, not size
         
     def set_layout(self, main_rect: tuple[int, int, int, int], 
-                   preview_rect: tuple[int, int, int, int]) -> None:
-        """Set the main and preview slot positions."""
+                   preview_rect: tuple[int, int, int, int],
+                   preview2_rect: tuple[int, int, int, int] | None = None) -> None:
+        """Set the main, preview, and optional preview2 slot positions."""
         self.main_slot = WindowSlot(*main_rect)
         self.preview_slot = WindowSlot(*preview_rect)
+        if preview2_rect is not None:
+            self.preview2_slot = WindowSlot(*preview2_rect)
         
     def find_eqgame_windows(self) -> list[int]:
         """Find all eqgame.exe windows."""
@@ -284,6 +288,30 @@ class TiledWindowManager:
                 self.preview_slot.hwnd = hwnd
                 return True
         return False
+
+    def assign_to_preview2(self, hwnd: int) -> bool:
+        """Assign a window to the second preview slot."""
+        if self.preview2_slot is None:
+            return False
+
+        # Record the window's native size before repositioning
+        current = self.get_window_rect(hwnd)
+        if current:
+            self.preview2_slot.original_width = current[2]
+            self.preview2_slot.original_height = current[3]
+            log.log_info(f"assign_to_preview2: recorded native size {current[2]}x{current[3]} for hwnd={hwnd}")
+
+        if self.preserve_size and current:
+            if self.position_window(hwnd, self.preview2_slot.x, self.preview2_slot.y,
+                                    current[2], current[3]):
+                self.preview2_slot.hwnd = hwnd
+                return True
+        else:
+            if self.position_window(hwnd, self.preview2_slot.x, self.preview2_slot.y,
+                                    self.preview2_slot.width, self.preview2_slot.height):
+                self.preview2_slot.hwnd = hwnd
+                return True
+        return False
     
     def _bring_to_front(self, hwnd: int) -> None:
         """Bring window to front and give it focus.
@@ -298,74 +326,98 @@ class TiledWindowManager:
         except Exception as e:
             log.log_warning(f"_bring_to_front failed hwnd={hwnd}: {e}")
     
+    def _get_all_assigned_hwnds(self) -> set[int]:
+        """Return the set of HWNDs currently assigned to any slot."""
+        hwnds: set[int] = set()
+        for slot in [self.main_slot, self.preview_slot, self.preview2_slot]:
+            if slot and slot.hwnd is not None:
+                hwnds.add(slot.hwnd)
+        return hwnds
+
     def swap_windows(self) -> bool:
-        """Swap main and preview windows."""
+        """Swap windows: rotates main -> preview -> preview2 -> main.
+        If only 2 slots are filled (main + preview), swaps those two."""
         if self.main_slot is None or self.preview_slot is None:
             log.log_warning("swap_windows: slots not configured")
             return False
             
         main_hwnd = self.main_slot.hwnd
         preview_hwnd = self.preview_slot.hwnd
+        preview2_hwnd = self.preview2_slot.hwnd if self.preview2_slot else None
         
-        # Both slots must have windows to swap
+        # Need at least main + preview to swap
         if main_hwnd is None or preview_hwnd is None:
             log.log_warning(f"swap_windows: missing window - main={main_hwnd} preview={preview_hwnd}")
             return False
+
+        # Determine if this is a 3-way or 2-way swap
+        three_way = preview2_hwnd is not None
 
         use_move_only = self.preserve_size
 
         if use_move_only:
             # ==============================================================
             # FAST SWAP — zero synchronous queries to the game windows.
-            #
-            # Validation, rect logging, and size checks are all skipped
-            # because every win32 "get" call sends a synchronous message to
-            # the target window's thread. If that thread is busy (rendering
-            # a frame, loading a zone, etc.) our Qt GUI thread blocks until
-            # the game responds — which is the freeze.
-            #
-            # IsWindow() is the ONE safe call — it doesn't send a message.
             # ==============================================================
             if not win32gui.IsWindow(main_hwnd) or not win32gui.IsWindow(preview_hwnd):
                 log.log_warning(f"swap_windows: window handle invalid - main={main_hwnd} preview={preview_hwnd}")
                 return False
+            if three_way and not win32gui.IsWindow(preview2_hwnd):
+                log.log_warning(f"swap_windows: preview2 window handle invalid - {preview2_hwnd}")
+                return False
 
-            log.log_info(f"swap_windows FAST: main={main_hwnd} -> ({self.preview_slot.x},{self.preview_slot.y}), "
-                         f"preview={preview_hwnd} -> ({self.main_slot.x},{self.main_slot.y})")
+            if three_way:
+                log.log_info(f"swap_windows FAST 3-way: main={main_hwnd} -> preview, "
+                             f"preview={preview_hwnd} -> preview2, preview2={preview2_hwnd} -> main")
 
-            result1 = self.position_window(main_hwnd, self.preview_slot.x, self.preview_slot.y,
-                                           0, 0, move_only=True)
+                # Rotate: main->preview, preview->preview2, preview2->main
+                self.position_window(main_hwnd, self.preview_slot.x, self.preview_slot.y,
+                                     0, 0, move_only=True)
+                self.position_window(preview_hwnd, self.preview2_slot.x, self.preview2_slot.y,
+                                     0, 0, move_only=True)
+                self.position_window(preview2_hwnd, self.main_slot.x, self.main_slot.y,
+                                     0, 0, move_only=True)
 
-            result2 = self.position_window(preview_hwnd, self.main_slot.x, self.main_slot.y,
-                                           0, 0, move_only=True)
+                # Update slot assignments: rotate HWNDs and original sizes
+                old_main = (main_hwnd, self.main_slot.original_width, self.main_slot.original_height)
+                old_prev = (preview_hwnd, self.preview_slot.original_width, self.preview_slot.original_height)
+                old_prev2 = (preview2_hwnd, self.preview2_slot.original_width, self.preview2_slot.original_height)
 
-            # Update slot assignments and swap original sizes
-            self.main_slot.hwnd = preview_hwnd
-            self.preview_slot.hwnd = main_hwnd
-            self.main_slot.original_width, self.preview_slot.original_width = (
-                self.preview_slot.original_width, self.main_slot.original_width
-            )
-            self.main_slot.original_height, self.preview_slot.original_height = (
-                self.preview_slot.original_height, self.main_slot.original_height
-            )
+                self.main_slot.hwnd, self.main_slot.original_width, self.main_slot.original_height = old_prev2
+                self.preview_slot.hwnd, self.preview_slot.original_width, self.preview_slot.original_height = old_main
+                self.preview2_slot.hwnd, self.preview2_slot.original_width, self.preview2_slot.original_height = old_prev
 
-            log.log_info(f"swap_windows FAST completed: result1={result1} result2={result2}")
+                new_main_hwnd = preview2_hwnd
+            else:
+                log.log_info(f"swap_windows FAST 2-way: main={main_hwnd} <-> preview={preview_hwnd}")
 
-            # SetForegroundWindow is also synchronous (sends WM_ACTIVATE).
-            # Use a tiny ctypes call via PostMessage to request activation
-            # without blocking.  If the game's thread is busy it will
-            # process the focus change when it's ready.
+                self.position_window(main_hwnd, self.preview_slot.x, self.preview_slot.y,
+                                     0, 0, move_only=True)
+                self.position_window(preview_hwnd, self.main_slot.x, self.main_slot.y,
+                                     0, 0, move_only=True)
+
+                self.main_slot.hwnd = preview_hwnd
+                self.preview_slot.hwnd = main_hwnd
+                self.main_slot.original_width, self.preview_slot.original_width = (
+                    self.preview_slot.original_width, self.main_slot.original_width
+                )
+                self.main_slot.original_height, self.preview_slot.original_height = (
+                    self.preview_slot.original_height, self.main_slot.original_height
+                )
+
+                new_main_hwnd = preview_hwnd
+
+            log.log_info(f"swap_windows FAST completed")
+
+            # Bring the new main window to the foreground
             try:
-                # WM_ACTIVATE: wParam=WA_ACTIVE(1), lParam=0
-                win32gui.PostMessage(preview_hwnd, win32con.WM_ACTIVATE,
+                win32gui.PostMessage(new_main_hwnd, win32con.WM_ACTIVATE,
                                      win32con.WA_ACTIVE, 0)
             except Exception:
                 pass
-            # Also try the standard call — if the game is responsive this
-            # is the reliable way to actually get foreground status.
             try:
-                if not self.is_hung_window(preview_hwnd):
-                    win32gui.SetForegroundWindow(preview_hwnd)
+                if not self.is_hung_window(new_main_hwnd):
+                    win32gui.SetForegroundWindow(new_main_hwnd)
             except Exception:
                 pass
 
@@ -378,60 +430,160 @@ class TiledWindowManager:
         # FULL SWAP — used when preserve_size is off (resize mode)
         # ==============================================================
             
-        # Validate both windows still exist
+        # Validate all participating windows
         if not self.is_valid_window(main_hwnd) or not self.is_valid_window(preview_hwnd):
             log.log_warning(f"swap_windows: invalid window - main_valid={self.is_valid_window(main_hwnd)} preview_valid={self.is_valid_window(preview_hwnd)}")
             return False
+        if three_way and not self.is_valid_window(preview2_hwnd):
+            log.log_warning(f"swap_windows: preview2 window invalid hwnd={preview2_hwnd}")
+            return False
 
-        # Determine sizes: each window takes the target slot's size
-        main_ow = self.preview_slot.width
-        main_oh = self.preview_slot.height
-        prev_ow = self.main_slot.width
-        prev_oh = self.main_slot.height
+        if three_way:
+            # 3-way rotation with full resize
+            log.log_info(f"swap_windows FULL 3-way: main={main_hwnd}, preview={preview_hwnd}, preview2={preview2_hwnd}")
 
-        # Log state before swap
-        main_rect_before = self.get_window_rect(main_hwnd)
-        preview_rect_before = self.get_window_rect(preview_hwnd)
-        main_target = (self.preview_slot.x, self.preview_slot.y, main_ow, main_oh)
-        preview_target = (self.main_slot.x, self.main_slot.y, prev_ow, prev_oh)
-        
-        log.log_swap_state("BEFORE", main_hwnd, preview_hwnd, 
-                           main_rect_before, preview_rect_before,
-                           main_target, preview_target)
+            result1 = self.position_window(main_hwnd, self.preview_slot.x, self.preview_slot.y,
+                                 self.preview_slot.width, self.preview_slot.height, skip_validation=True)
+            time.sleep(0.05)
+            result2 = self.position_window(preview_hwnd, self.preview2_slot.x, self.preview2_slot.y,
+                                 self.preview2_slot.width, self.preview2_slot.height, skip_validation=True)
+            time.sleep(0.05)
+            result3 = self.position_window(preview2_hwnd, self.main_slot.x, self.main_slot.y,
+                                 self.main_slot.width, self.main_slot.height, skip_validation=True)
 
-        result1 = self.position_window(main_hwnd, self.preview_slot.x, self.preview_slot.y,
-                             main_ow, main_oh, skip_validation=True)
+            old_main = (main_hwnd, self.main_slot.original_width, self.main_slot.original_height)
+            old_prev = (preview_hwnd, self.preview_slot.original_width, self.preview_slot.original_height)
+            old_prev2 = (preview2_hwnd, self.preview2_slot.original_width, self.preview2_slot.original_height)
 
-        time.sleep(0.05)
+            self.main_slot.hwnd, self.main_slot.original_width, self.main_slot.original_height = old_prev2
+            self.preview_slot.hwnd, self.preview_slot.original_width, self.preview_slot.original_height = old_main
+            self.preview2_slot.hwnd, self.preview2_slot.original_width, self.preview2_slot.original_height = old_prev
 
-        result2 = self.position_window(preview_hwnd, self.main_slot.x, self.main_slot.y,
-                             prev_ow, prev_oh, skip_validation=True)
-        
-        # Update slot assignments AND swap original sizes to follow the window
-        self.main_slot.hwnd = preview_hwnd
-        self.preview_slot.hwnd = main_hwnd
-        self.main_slot.original_width, self.preview_slot.original_width = (
-            self.preview_slot.original_width, self.main_slot.original_width
-        )
-        self.main_slot.original_height, self.preview_slot.original_height = (
-            self.preview_slot.original_height, self.main_slot.original_height
-        )
-        
-        # Log state after swap
-        main_rect_after = self.get_window_rect(main_hwnd)
-        preview_rect_after = self.get_window_rect(preview_hwnd)
-        log.log_swap_state("AFTER", preview_hwnd, main_hwnd,
-                           preview_rect_after, main_rect_after,
-                           preview_target, main_target)
-        
-        log.log_info(f"swap_windows completed: result1={result1} result2={result2}")
-        
-        time.sleep(0.05)
-        self._bring_to_front(preview_hwnd)
+            log.log_info(f"swap_windows FULL 3-way completed: r1={result1} r2={result2} r3={result3}")
+
+            time.sleep(0.05)
+            self._bring_to_front(preview2_hwnd)
+        else:
+            # 2-way swap
+            main_ow = self.preview_slot.width
+            main_oh = self.preview_slot.height
+            prev_ow = self.main_slot.width
+            prev_oh = self.main_slot.height
+
+            main_rect_before = self.get_window_rect(main_hwnd)
+            preview_rect_before = self.get_window_rect(preview_hwnd)
+            main_target = (self.preview_slot.x, self.preview_slot.y, main_ow, main_oh)
+            preview_target = (self.main_slot.x, self.main_slot.y, prev_ow, prev_oh)
+            
+            log.log_swap_state("BEFORE", main_hwnd, preview_hwnd, 
+                               main_rect_before, preview_rect_before,
+                               main_target, preview_target)
+
+            result1 = self.position_window(main_hwnd, self.preview_slot.x, self.preview_slot.y,
+                                 main_ow, main_oh, skip_validation=True)
+            time.sleep(0.05)
+            result2 = self.position_window(preview_hwnd, self.main_slot.x, self.main_slot.y,
+                                 prev_ow, prev_oh, skip_validation=True)
+            
+            self.main_slot.hwnd = preview_hwnd
+            self.preview_slot.hwnd = main_hwnd
+            self.main_slot.original_width, self.preview_slot.original_width = (
+                self.preview_slot.original_width, self.main_slot.original_width
+            )
+            self.main_slot.original_height, self.preview_slot.original_height = (
+                self.preview_slot.original_height, self.main_slot.original_height
+            )
+            
+            main_rect_after = self.get_window_rect(main_hwnd)
+            preview_rect_after = self.get_window_rect(preview_hwnd)
+            log.log_swap_state("AFTER", preview_hwnd, main_hwnd,
+                               preview_rect_after, main_rect_after,
+                               preview_target, main_target)
+            
+            log.log_info(f"swap_windows completed: result1={result1} result2={result2}")
+            
+            time.sleep(0.05)
+            self._bring_to_front(preview_hwnd)
         
         if self._swap_callback:
             self._swap_callback()
             
+        return True
+
+    def swap_main_with_preview_slot(self, slot_index: int) -> bool:
+        """Swap the main window with a specific preview slot (pairwise 2-way swap).
+        
+        slot_index: 1 for preview_slot, 2 for preview2_slot.
+        """
+        if self.main_slot is None:
+            log.log_warning("swap_main_with_preview_slot: main_slot not configured")
+            return False
+
+        target_slot = self.preview_slot if slot_index == 1 else self.preview2_slot
+        if target_slot is None:
+            log.log_warning(f"swap_main_with_preview_slot: slot {slot_index} not configured")
+            return False
+
+        main_hwnd = self.main_slot.hwnd
+        target_hwnd = target_slot.hwnd
+
+        if main_hwnd is None or target_hwnd is None:
+            log.log_warning(f"swap_main_with_preview_slot: missing window - main={main_hwnd} target={target_hwnd}")
+            return False
+
+        use_move_only = self.preserve_size
+
+        if use_move_only:
+            if not win32gui.IsWindow(main_hwnd) or not win32gui.IsWindow(target_hwnd):
+                log.log_warning("swap_main_with_preview_slot: window handle invalid")
+                return False
+
+            log.log_info(f"swap_main_with_preview_slot FAST: main={main_hwnd} <-> slot{slot_index}={target_hwnd}")
+
+            self.position_window(main_hwnd, target_slot.x, target_slot.y, 0, 0, move_only=True)
+            self.position_window(target_hwnd, self.main_slot.x, self.main_slot.y, 0, 0, move_only=True)
+        else:
+            if not self.is_valid_window(main_hwnd) or not self.is_valid_window(target_hwnd):
+                log.log_warning("swap_main_with_preview_slot: invalid window")
+                return False
+
+            log.log_info(f"swap_main_with_preview_slot FULL: main={main_hwnd} <-> slot{slot_index}={target_hwnd}")
+
+            result1 = self.position_window(main_hwnd, target_slot.x, target_slot.y,
+                                           target_slot.width, target_slot.height, skip_validation=True)
+            time.sleep(0.05)
+            result2 = self.position_window(target_hwnd, self.main_slot.x, self.main_slot.y,
+                                           self.main_slot.width, self.main_slot.height, skip_validation=True)
+
+            log.log_info(f"swap_main_with_preview_slot FULL completed: r1={result1} r2={result2}")
+            time.sleep(0.05)
+
+        # Swap HWNDs and original sizes
+        self.main_slot.hwnd = target_hwnd
+        target_slot.hwnd = main_hwnd
+        self.main_slot.original_width, target_slot.original_width = (
+            target_slot.original_width, self.main_slot.original_width
+        )
+        self.main_slot.original_height, target_slot.original_height = (
+            target_slot.original_height, self.main_slot.original_height
+        )
+
+        new_main_hwnd = target_hwnd
+
+        # Bring the new main window to the foreground
+        try:
+            win32gui.PostMessage(new_main_hwnd, win32con.WM_ACTIVATE, win32con.WA_ACTIVE, 0)
+        except Exception:
+            pass
+        try:
+            if not self.is_hung_window(new_main_hwnd):
+                win32gui.SetForegroundWindow(new_main_hwnd)
+        except Exception:
+            pass
+
+        if self._swap_callback:
+            self._swap_callback()
+
         return True
     
     def set_swap_callback(self, callback: Callable[[], None]) -> None:
@@ -448,7 +600,7 @@ class TiledWindowManager:
         """Refresh window positions if they've drifted from target."""
         tolerance = 10  # pixels of drift allowed before repositioning
         
-        for slot in [self.main_slot, self.preview_slot]:
+        for slot in [self.main_slot, self.preview_slot, self.preview2_slot]:
             if slot and slot.hwnd:
                 if self.is_valid_window(slot.hwnd):
                     current = self.get_window_rect(slot.hwnd)
@@ -477,7 +629,7 @@ class TiledWindowManager:
         Returns True if all windows are correct."""
         all_correct = True
         
-        for slot in [self.main_slot, self.preview_slot]:
+        for slot in [self.main_slot, self.preview_slot, self.preview2_slot]:
             if slot and slot.hwnd:
                 if self.is_valid_window(slot.hwnd):
                     current = self.get_window_rect(slot.hwnd)
@@ -510,7 +662,7 @@ class TiledWindowManager:
     
     def release_all(self) -> None:
         """Release all managed windows (clear slot assignments)."""
-        for slot in [self.main_slot, self.preview_slot]:
+        for slot in [self.main_slot, self.preview_slot, self.preview2_slot]:
             if slot:
                 slot.hwnd = None
                 slot.original_width = None

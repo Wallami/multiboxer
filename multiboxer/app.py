@@ -10,13 +10,6 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
-try:
-    import win32con
-    import win32gui
-except ImportError:
-    win32con = None
-    win32gui = None
-
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
@@ -259,30 +252,19 @@ class MainWindow(QMainWindow):
         self.small_slot.clicked.connect(self._on_small_slot_clicked)
         self.main_slot.enable_lock_indicators(True)
         self._main_slot_lock_state: bool | None = None
-        self._main_slot_lock_tolerance = 50  # Increased to handle residual frame overhead
+        self._main_slot_lock_tolerance = 6
         self._main_slot_control_strip_height = 22
-        
-        # Preview slot watchdog system
-        self._preview_slot_lock_state: bool | None = None
-        self._preview_slot_lock_tolerance = 20  # Increased for consistency
-        self._preview_min_target_width = 80
-        self._preview_min_target_height = 50
-        
-        self._main_attach_throttle_seconds = 0.3  # Reduced to allow faster initial grab
+        self._main_attach_throttle_seconds = 1.2
         self._last_main_attach_at = 0.0
         self._main_lock_correction_cooldown_seconds = 2.5
         self._last_main_lock_correction_at = 0.0
         self._main_min_target_width = 640
         self._main_min_target_height = 360
         self._last_stable_main_target_rect: tuple[int, int, int, int] | None = None
-        
-        # Cooldown tracking for viewport refresh prevention
-        self._last_attachment_times: dict[str, float] = {}
         self._pixel_perfect_fit_enabled = False
         self._is_custom_maximized = False
         self._restore_geometry = None
         self._swap_shortcut_latched = False
-        self._was_minimized = False
 
         self.main_instance: GameInstance | None = None
         self.small_instance: GameInstance | None = None
@@ -290,12 +272,6 @@ class MainWindow(QMainWindow):
         self._watchdog_errors: deque[str] = deque(maxlen=25)
         self._verbose_watchdog_logs = False
         self._safe_mode_enabled = False
-
-        # Delayed decoration removal system
-        self._decoration_check_timer = QTimer(self)
-        self._decoration_check_timer.setSingleShot(True)
-        self._decoration_check_timer.timeout.connect(self._check_and_strip_delayed_decorations)
-        self._pending_decoration_check_hwnd: int | None = None
 
         self.launch_button = QPushButton("Launch EverQuest")
         self.launch_button.clicked.connect(self.launch_main_instance)
@@ -924,30 +900,6 @@ class MainWindow(QMainWindow):
         self.main_slot.set_lock_state(False, visible=False)
         self._main_slot_lock_state = None
 
-    def _hide_preview_lock_state(self) -> None:
-        """Hide preview slot lock state."""
-        self._preview_slot_lock_state = None
-
-    def _set_preview_lock_state(self, locked: bool, reason: str, force_log: bool = False) -> None:
-        """Set preview slot lock state and record errors."""
-        if force_log or (self._preview_slot_lock_state != locked):
-            self._log_capture(f"Preview lock {'LOCKED' if locked else 'UNLOCKED'}: {reason}")
-        lowered_reason = reason.lower()
-        if (
-            not locked
-            and (
-                "failed" in lowered_reason
-                or "unable" in lowered_reason
-                or "invalid" in lowered_reason
-                or "not embedded" in lowered_reason
-                or "not visible" in lowered_reason
-                or "not enabled" in lowered_reason
-                or "below minimum" in lowered_reason
-            )
-        ):
-            self._record_watchdog_error(f"Preview lock error: {reason}")
-        self._preview_slot_lock_state = locked
-
     def _is_rect_aligned(self, expected: tuple[int, int, int, int], actual: tuple[int, int, int, int], tolerance: int) -> bool:
         return (
             abs(expected[0] - actual[0]) <= tolerance
@@ -970,44 +922,12 @@ class MainWindow(QMainWindow):
         return not self._is_rect_aligned(previous, current, tolerance)
 
     def _confirm_main_lock_alignment(self, hwnd: int, target_rect: tuple[int, int, int, int], context: str) -> bool:
-        # Check if window is minimized and handle it
-        if self.embedder.is_window_minimized(hwnd):
-            # If the window is minimized, try to restore it for inactive sessions
-            if "inactive" in context.lower() or "container" in context.lower():
-                self._log_capture(f"Detected minimized window in {context}, attempting restore")
-                if self.embedder.restore_window(hwnd):
-                    # Give the window a moment to restore before checking alignment
-                    time.sleep(0.1)
-                else:
-                    self._set_main_lock_state(False, f"{context}: failed to restore minimized window HWND {hwnd}.", force_log=True)
-                    return False
-            else:
-                self._set_main_lock_state(False, f"{context}: window is minimized HWND {hwnd}.", force_log=True)
-                return False
-
         client_rect = self.embedder.get_client_rect_on_screen(hwnd)
         window_rect = self.embedder.get_window_rect(hwnd)
 
         if client_rect is None and window_rect is None:
             self._set_main_lock_state(False, f"{context}: unable to read window rect for HWND {hwnd}.", force_log=True)
             return False
-
-        # Check for minimized coordinates (typically -32000, -32000 on Windows)
-        if window_rect is not None and (window_rect[0] <= -30000 or window_rect[1] <= -30000):
-            self._log_capture(f"Detected off-screen coordinates in {context}, attempting to reposition")
-            # Try to restore and reposition the window using the target coordinates
-            target_x, target_y, target_width, target_height = target_rect
-            if self.embedder.force_restore_and_reposition(hwnd, target_x, target_y, target_width, target_height):
-                # Force a refresh after restoration
-                self._schedule_geometry_refresh(30)
-                time.sleep(0.1)
-                # Re-read the rectangles after restoration
-                client_rect = self.embedder.get_client_rect_on_screen(hwnd)
-                window_rect = self.embedder.get_window_rect(hwnd)
-                self._log_capture(f"Window repositioned to: client={client_rect}, window={window_rect}")
-            else:
-                self._set_main_lock_state(False, f"{context}: failed to reposition off-screen window HWND {hwnd}.", force_log=True)
-                return False
 
         if client_rect is not None and self._is_rect_aligned(target_rect, client_rect, self._main_slot_lock_tolerance):
             self._set_main_lock_state(True, f"{context}: aligned (client) at {client_rect}.")
@@ -1016,19 +936,6 @@ class MainWindow(QMainWindow):
         if window_rect is not None and self._is_rect_aligned(target_rect, window_rect, self._main_slot_lock_tolerance):
             self._set_main_lock_state(True, f"{context}: aligned (window) at {window_rect}.")
             return True
-        
-        # Check if position is correct even with frame overhead (for borderless windows after decoration stripping)
-        if client_rect is not None and window_rect is not None:
-            # Position should be very close even with frame overhead
-            position_aligned = (abs(target_rect[0] - client_rect[0]) <= 10 and 
-                              abs(target_rect[1] - client_rect[1]) <= 10)
-            # Size might differ due to frame overhead, but should be reasonably close
-            size_reasonable = (abs(target_rect[2] - client_rect[2]) <= 60 and 
-                             abs(target_rect[3] - client_rect[3]) <= 60)
-            
-            if position_aligned and size_reasonable:
-                self._set_main_lock_state(True, f"{context}: acceptable alignment with frame overhead - client at {client_rect}.")
-                return True
 
         if client_rect is not None and window_rect is not None:
             client_error = self._rect_error(target_rect, client_rect)
@@ -1051,49 +958,6 @@ class MainWindow(QMainWindow):
             f"{context}: expected {target_rect}, got {actual_rect} ({source}).",
         )
         return False
-
-    def _confirm_preview_lock_alignment(self, hwnd: int, target_rect: tuple[int, int, int, int], context: str) -> bool:
-        """Check preview slot alignment for floating window (no embedding)."""
-        if not self.embedder.is_window(hwnd):
-            self._set_preview_lock_state(False, f"{context}: window HWND {hwnd} is invalid.", force_log=True)
-            return False
-
-        # Check window visibility and enabled state
-        is_visible, is_enabled, parent_hwnd, style, exstyle = self.embedder.get_window_state(hwnd)
-        if not is_visible:
-            self._set_preview_lock_state(False, f"{context}: window HWND {hwnd} is not visible.", force_log=True)
-            return False
-        if not is_enabled:
-            self._set_preview_lock_state(False, f"{context}: window HWND {hwnd} is not enabled.", force_log=True)
-            return False
-
-        # Get client rect for position/size validation
-        client_rect = self.embedder.get_client_rect_on_screen(hwnd)
-        if client_rect is None:
-            self._set_preview_lock_state(False, f"{context}: unable to read client rect for HWND {hwnd}.", force_log=True)
-            return False
-
-        # For floating windows, check position alignment within tolerance
-        target_x, target_y, target_width, target_height = target_rect
-        actual_x, actual_y, actual_width, actual_height = client_rect
-        
-        tolerance = self._preview_slot_lock_tolerance
-        x_ok = abs(actual_x - target_x) <= tolerance
-        y_ok = abs(actual_y - target_y) <= tolerance
-        # Size tolerance more lenient since game window maintains its original size
-        size_ok = actual_width >= 50 and actual_height >= 50
-        
-        if not (x_ok and y_ok):
-            self._set_preview_lock_state(False, f"{context}: position mismatch - expected ({target_x},{target_y}), got ({actual_x},{actual_y}).", force_log=True)
-            return False
-
-        if not size_ok:
-            self._set_preview_lock_state(False, f"{context}: size {actual_width}x{actual_height} below minimum.", force_log=True)
-            return False
-
-        # All checks passed
-        self._set_preview_lock_state(True, f"{context}: preview floating aligned successfully.")
-        return True
 
     def _ensure_main_window_foreground(self) -> None:
         if self.main_instance is None:
@@ -1119,48 +983,30 @@ class MainWindow(QMainWindow):
         for delay in (0, 120, 280):
             QTimer.singleShot(delay, make_attempt(delay))
 
-    def _retry_main_lock_alignment(self, hwnd: int, target_rect: tuple[int, int, int, int], context: str, max_attempts: int = 2) -> bool:
+    def _retry_main_lock_alignment(self, hwnd: int, target_rect: tuple[int, int, int, int], context: str, max_attempts: int = 3) -> bool:
         x, y, width, height = target_rect
         for attempt in range(1, max_attempts + 1):
             aligned = self._confirm_main_lock_alignment(hwnd, target_rect, f"{context} attempt {attempt}")
             if aligned:
-                # Reset refresh cycle counter when successfully locked
-                self._refresh_cycle_count = 0
                 return True
 
             if self._verbose_watchdog_logs:
                 self._log_capture(f"Main lock retry: attempt {attempt}/{max_attempts} for HWND {hwnd}.")
-            
-            # Small delay between attempts to let window settle
-            if attempt < max_attempts:
-                time.sleep(0.05)
-            
-            # DON'T call attach_floating again - it causes size accumulation!
-            # The first attach already positioned the window. Only re-enforce styles.
-            try:
-                clean_style = 0x94000000  # WS_POPUP | WS_VISIBLE | WS_CLIPSIBLINGS
-                win32gui.SetWindowLong(hwnd, win32con.GWL_STYLE, clean_style)
-                win32gui.SetWindowPos(
-                    hwnd, 0, 0, 0, 0, 0,
-                    win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOZORDER | win32con.SWP_FRAMECHANGED
+            attached = self.embedder.attach_floating(hwnd, x, y, width, height)
+            if not attached:
+                self._record_watchdog_error(
+                    f"Main lock retry attach failed: attempt {attempt}/{max_attempts} for HWND {hwnd}."
                 )
-            except:
-                pass
+                continue
 
-        # Even if alignment check failed, if we've tried multiple times, accept current state
-        # to prevent infinite accumulation loops
-        self._refresh_cycle_count = 0  # Reset to prevent further attempts
-        self._log_capture(f"Main lock accepting current state after {max_attempts} attempts to prevent accumulation.")
-        return True  # Return True to stop further retry attempts
+        self._record_watchdog_error(
+            f"Main lock retry exhausted: HWND {hwnd} not aligned after {max_attempts} attempt(s)."
+        )
+        return False
 
     def _refresh_instance_window(self, instance: GameInstance, slot: SlotFrame) -> None:
         hwnd = instance.child_hwnd if instance.child_hwnd is not None else instance.hwnd
         if hwnd is None:
-            return
-
-        # Check and validate window state before proceeding
-        if not self.embedder.is_window(hwnd):
-            self._log_capture(f"Window HWND {hwnd} is no longer valid, skipping refresh")
             return
 
         if slot == self.main_slot:
@@ -1168,85 +1014,29 @@ class MainWindow(QMainWindow):
         else:
             target_rect = self._slot_global_rect(slot)
         x, y, width, height = target_rect
-        is_visible, is_enabled, parent_hwnd, style, exstyle = self.embedder.get_window_state(hwnd)
-        
-        # Log window style for debugging if it has problematic decorations
-        if style and win32con and (
-            (style & win32con.WS_CAPTION) or 
-            (style & win32con.WS_THICKFRAME) or 
-            (style & win32con.WS_SYSMENU) or 
-            (style & win32con.WS_MINIMIZEBOX) or 
-            (style & win32con.WS_MAXIMIZEBOX)
-        ):
-            self._log_capture(f"Window {hwnd} still has decorations: style={style}, deferring to attach cycle")
-            # Avoid redundant decoration strip during refresh - let attach cycle handle it
-            
+        is_visible, is_enabled, parent_hwnd, _, _ = self.embedder.get_window_state(hwnd)
         if slot == self.small_slot:
-            # Preview slot uses floating attach - calculate target rect with control strip offset
-            preview_x = x
-            preview_y = y + self._small_slot_control_strip_height
-            preview_width = width
-            preview_height = max(1, height - self._small_slot_control_strip_height)
-            preview_target_rect = (preview_x, preview_y, preview_width, preview_height)
-            
-            # Cooldown-based refresh prevention
-            current_time = time.time()
-            last_attach_key = f"small_slot_attach_{hwnd}"
-            
-            # Check if we recently attached this window (within 2 seconds)
-            if hasattr(self, '_last_attachment_times'):
-                last_attach_time = self._last_attachment_times.get(last_attach_key, 0)
-                if current_time - last_attach_time < 2.0:
-                    # Too recent - just ensure visibility and don't resize
-                    if not is_visible and win32gui:
-                        win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
-                    instance.last_managed_rect = preview_target_rect
-                    self.small_slot_swap_button.raise_()
-                    return
-            else:
-                self._last_attachment_times = {}
-            
-            # For floating windows, check position alignment (NOT parent)
-            client_rect = self.embedder.get_client_rect_on_screen(hwnd)
-            if client_rect:
-                actual_x, actual_y, actual_w, actual_h = client_rect
-                tolerance = self._preview_slot_lock_tolerance
-                position_ok = abs(actual_x - preview_x) <= tolerance and abs(actual_y - preview_y) <= tolerance
-                
-                if position_ok and is_visible:
-                    # Already positioned correctly - no re-attach needed
-                    instance.last_managed_rect = preview_target_rect
-                    self._confirm_preview_lock_alignment(hwnd, preview_target_rect, "refresh alignment check")
-                    self.small_slot_swap_button.raise_()
-                    return
-            
-            # Need to attach - record the time to prevent immediate loops
-            self._last_attachment_times[last_attach_key] = current_time
-            self._attach_to_slot(instance, slot)
+            container_hwnd = int(slot.winId())
+            if parent_hwnd != container_hwnd:
+                self._attach_to_slot(instance, slot)
+                return
+
+            needs_resize = (
+                not is_visible
+                or not is_enabled
+            )
+            if needs_resize:
+                self.embedder.position_embedded_no_resize(hwnd, 0, self._small_slot_control_strip_height)
+            instance.last_managed_rect = target_rect
+            self.small_slot_swap_button.raise_()
             return
 
         main_rect_tolerance = 48 if slot == self.main_slot else 2
-        
-        # Stability check for main slot - if recently attached successfully, don't re-attach
-        # BUT always allow attach if decorations are present (need to strip them)
-        has_decorations = (style and win32con and (
-            (style & win32con.WS_CAPTION) or 
-            (style & win32con.WS_THICKFRAME) or 
-            (style & win32con.WS_SYSMENU)
-        ))
-        
-        # DISABLED stability check - it was blocking initial grab
-        # if slot == self.main_slot and self._main_slot_lock_state is True and not has_decorations:
-        #     current_time = time.time()
-        #     if (current_time - self._last_main_attach_at) < 3.0:
-        #         return
-        
         needs_attach = (
             self._rect_changed(instance.last_managed_rect, target_rect, tolerance=main_rect_tolerance)
             or parent_hwnd not in (0, None)
             or not is_visible
             or not is_enabled
-            or has_decorations  # Force attach if decorations present
         )
 
         if needs_attach:
@@ -1259,11 +1049,6 @@ class MainWindow(QMainWindow):
                 if (now - self._last_main_attach_at) < self._main_attach_throttle_seconds:
                     return
                 self._last_main_attach_at = now
-                
-                # Track refresh cycles for debugging
-                if not hasattr(self, '_refresh_cycle_count'):
-                    self._refresh_cycle_count = 0
-                self._refresh_cycle_count += 1
 
             attached = self.embedder.attach_floating(hwnd, x, y, width, height)
             if attached:
@@ -1271,36 +1056,13 @@ class MainWindow(QMainWindow):
                 if slot == self.main_slot:
                     if not self.embedder.raise_floating_window(hwnd):
                         self._record_watchdog_error(f"Main z-order raise failed after attach for HWND {hwnd}.")
-                    # Give more time for styles to apply before checking alignment
-                    time.sleep(0.1)
                     self._confirm_main_lock_alignment(hwnd, target_rect, "refresh attach")
-                    # Mark as locked regardless of alignment check result to prevent re-attach loops
-                    self._set_main_lock_state(True, "attach completed, accepting current position.")
             elif slot == self.main_slot:
                 self._set_main_lock_state(False, "refresh attach failed.", force_log=True)
             return
 
         if slot == self.main_slot:
-            # Only check alignment if we actually attempted an operation that might have changed positioning
-            # This prevents noise from mathematical accumulation in refresh cycles
-            if needs_attach:
-                # Provide more context about the window state for better debugging
-                context = "refresh alignment check"
-                if parent_hwnd not in (0, None):
-                    context += " (embedded)"
-                if not is_visible:
-                    context += " (invisible)"
-                if not is_enabled:
-                    context += " (disabled)"
-                
-                self._confirm_main_lock_alignment(hwnd, target_rect, context)
-            else:
-                # Window is stable - set lock state if not already set
-                if self._main_slot_lock_state != True:
-                    self._set_main_lock_state(True, "refresh: window stable, no repositioning needed")
-                    # Reset refresh cycle count when successfully locked
-                    if hasattr(self, '_refresh_cycle_count'):
-                        self._refresh_cycle_count = 0
+            self._confirm_main_lock_alignment(hwnd, target_rect, "refresh alignment check")
 
     def _bind_child_to_instance(self, instance: GameInstance, child_pid: int) -> None:
         instance.child_pid = child_pid
@@ -1404,64 +1166,6 @@ class MainWindow(QMainWindow):
         lines.append(f"Main slot rect: x={x} y={y} w={width} h={height}")
         px, py, pwidth, pheight = self._slot_global_rect(self.small_slot)
         lines.append(f"Preview slot rect: x={px} y={py} w={pwidth} h={pheight}")
-        
-        # Add lock state information for debugging
-        main_lock = "LOCKED" if self._main_slot_lock_state else ("UNLOCKED" if self._main_slot_lock_state is False else "UNKNOWN")
-        preview_lock = "LOCKED" if self._preview_slot_lock_state else ("UNLOCKED" if self._preview_slot_lock_state is False else "UNKNOWN")
-        lines.append(f"Lock states: Main={main_lock}, Preview={preview_lock}")
-        
-        # Add detailed window style analysis
-        lines.append("Window style analysis:")
-        if self.main_instance:
-            hwnd = self.main_instance.child_hwnd or self.main_instance.hwnd
-            if hwnd and self.embedder.is_window(hwnd):
-                is_visible, is_enabled, parent_hwnd, style, exstyle = self.embedder.get_window_state(hwnd)
-                lines.append(f"  Main window styles: style={style} exstyle={exstyle}")
-                
-                # Expected clean style for comparison - using signed representation to match GetWindowLong
-                expected_clean_style = -1811939328  # 0x94000000 as signed 32-bit int
-                lines.append(f"  Expected clean style: {expected_clean_style}")
-                lines.append(f"  Style matches expected: {style == expected_clean_style}")
-                
-                # Detailed style breakdown for better debugging
-                current_flags = []
-                decoration_flags = []
-                
-                # Positive style flags (should be present)
-                if style & 0x80000000: current_flags.append("WS_POPUP")
-                if style & 0x10000000: current_flags.append("WS_VISIBLE") 
-                if style & 0x04000000: current_flags.append("WS_CLIPSIBLINGS")
-                if style & 0x20000000: current_flags.append("WS_MINIMIZE")
-                if style & 0x01000000: current_flags.append("WS_MAXIMIZE")
-                
-                # Decoration flags (should be absent for borderless window)
-                if style & 0x00C00000: decoration_flags.append("WS_CAPTION")
-                if style & 0x00040000: decoration_flags.append("WS_THICKFRAME") 
-                if style & 0x00080000: decoration_flags.append("WS_SYSMENU")
-                if style & 0x00800000: decoration_flags.append("WS_BORDER")
-                if style & 0x00400000: decoration_flags.append("WS_DLGFRAME")
-                if style & 0x00010000: decoration_flags.append("WS_MAXIMIZEBOX")
-                if style & 0x00020000: decoration_flags.append("WS_MINIMIZEBOX")
-                
-                lines.append(f"  Current style flags: {', '.join(current_flags) if current_flags else 'none'}")
-                lines.append(f"  Decoration flags: {', '.join(decoration_flags) if decoration_flags else 'none'}")
-                
-                window_rect = self.embedder.get_window_rect(hwnd)
-                client_rect = self.embedder.get_client_rect_on_screen(hwnd)
-                if window_rect and client_rect:
-                    frame_width = (window_rect[2] - window_rect[0]) - (client_rect[2] - client_rect[0])
-                    frame_height = (window_rect[3] - window_rect[1]) - (client_rect[3] - client_rect[1])
-                    lines.append(f"  Frame overhead: width={frame_width} height={frame_height}")
-                    
-                    # Allow minimal frame overhead (up to 2 pixels) for borderless
-                    is_borderless = len(decoration_flags) == 0 and frame_width <= 2 and frame_height <= 2
-                    lines.append(f"  Borderless achieved: {is_borderless}")
-        
-        # Add refresh cycle tracking
-        if hasattr(self, '_refresh_cycle_count'):
-            lines.append(f"Refresh cycles: {self._refresh_cycle_count}")
-        else:
-            self._refresh_cycle_count = 0
 
         for slot_name in ("Main", "Preview"):
             signature = self._watchdog_last_signature.get(slot_name)
@@ -1614,7 +1318,6 @@ class MainWindow(QMainWindow):
             self.preview_plus_button.hide()
             self.move_to_preview_button.setVisible(self.main_instance is not None)
             self.small_slot_swap_button.hide()
-            self._hide_preview_lock_state()
         else:
             self.small_slot.show_embed(f"Preview: {self.small_instance.session_label}")
             self.preview_status_box.setText(f"Preview: {self.small_instance.session_label}")
@@ -1623,8 +1326,6 @@ class MainWindow(QMainWindow):
             self._position_small_slot_swap_button()
             self.small_slot_swap_button.show()
             self.small_slot_swap_button.raise_()
-            if self._preview_slot_lock_state is None:
-                self._set_preview_lock_state(False, "Preview session active; awaiting alignment confirmation.")
 
     def _on_plus_clicked(self) -> None:
         if self.main_instance is not None and self.small_instance is None:
@@ -1797,7 +1498,6 @@ class MainWindow(QMainWindow):
         main_hwnd = None if self.main_instance is None else (self.main_instance.child_hwnd or self.main_instance.hwnd)
         small_hwnd = None if self.small_instance is None else (self.small_instance.child_hwnd or self.small_instance.hwnd)
         self._log_capture(f"Swap start: main_hwnd={main_hwnd}, preview_hwnd={small_hwnd}.")
-        
         if self.main_instance is not None or self.small_instance is not None:
             self._set_main_lock_state(False, "Swap requested: unlocking before session move.", force_log=True)
 
@@ -1847,68 +1547,36 @@ class MainWindow(QMainWindow):
             self._log_capture(f"{slot_name} attach failed: HWND {hwnd_to_manage} is invalid.")
             return
 
-        # Prepare window for seamless transition to prevent squashing
-        self.embedder.prepare_window_for_transition(hwnd_to_manage)
-        
-        # Special preparation for main slot to clear viewport state
-        if slot == self.main_slot:
-            self.embedder.prepare_window_for_main_slot(hwnd_to_manage)
-        
         slot_name = "Main" if slot == self.main_slot else "Preview"
         if slot == self.main_slot:
             x, y, width, height = self._main_slot_target_rect()
         else:
             x, y, width, height = self._slot_global_rect(slot)
-            
         if slot == self.small_slot:
-            # Use floating attach for preview slot - same approach as main slot
-            # Offset for control strip at top of preview slot
-            preview_x = x
-            preview_y = y + self._small_slot_control_strip_height
-            preview_width = width
-            preview_height = max(1, height - self._small_slot_control_strip_height)
-            
-            if self.embedder.attach_floating(hwnd_to_manage, preview_x, preview_y, preview_width, preview_height):
-                # Maintain z-order to prevent game windows going behind application
-                self.embedder.maintain_window_z_order(hwnd_to_manage, int(self.winId()))
+            container_hwnd = int(slot.winId())
+            if self.embedder.embed_with_fallback(hwnd_to_manage, container_hwnd):
+                self.embedder.position_embedded_no_resize(hwnd_to_manage, 0, self._small_slot_control_strip_height)
                 pid, title = self.embedder.get_window_info(hwnd_to_manage)
-                self._log_capture(f"{slot_name} floating attach success: HWND {hwnd_to_manage}, PID {pid}, Title '{title}'.")
-                instance.last_managed_rect = (preview_x, preview_y, preview_width, preview_height)
-                # Validate preview slot alignment
-                self._confirm_preview_lock_alignment(hwnd_to_manage, (preview_x, preview_y, preview_width, preview_height), "floating attach")
-                self._set_preview_lock_state(True, "floating attach completed.")
+                self._log_capture(f"{slot_name} embedded attach success: HWND {hwnd_to_manage}, PID {pid}, Title '{title}'.")
+                instance.last_managed_rect = (x, y, width, height)
                 self._position_small_slot_swap_button()
                 self.small_slot_swap_button.raise_()
             else:
-                self._log_capture(f"{slot_name} floating attach failed: HWND {hwnd_to_manage} could not be positioned.")
-                self._set_preview_lock_state(False, f"floating attach failed for HWND {hwnd_to_manage}.", force_log=True)
+                self._log_capture(f"{slot_name} embedded attach failed: HWND {hwnd_to_manage} could not be positioned.")
             return
-        
-        # Main slot uses attach_floating() which handles correct positioning directly
-        # Window state management handled by our new coordinate alignment system
-        
+
         self._set_main_lock_state(False, f"{slot_name} attach started for HWND {hwnd_to_manage}.", force_log=True)
         if slot == self.main_slot and (width < self._main_min_target_width or height < self._main_min_target_height):
             self._schedule_geometry_refresh(120)
             return
 
         if self.embedder.attach_floating(hwnd_to_manage, x, y, width, height):
-            # Maintain z-order to prevent game windows going behind application
-            self.embedder.maintain_window_z_order(hwnd_to_manage, int(self.winId()))
             pid, title = self.embedder.get_window_info(hwnd_to_manage)
             self._log_capture(f"{slot_name} floating attach success: HWND {hwnd_to_manage}, PID {pid}, Title '{title}'.")
             instance.last_managed_rect = (x, y, width, height)
             if not self.embedder.raise_floating_window(hwnd_to_manage):
                 self._record_watchdog_error(f"Main z-order raise failed during attach for HWND {hwnd_to_manage}.")
-            
-            # Give more time for styles to apply before checking alignment
-            time.sleep(0.1)
-            
-            # Check alignment but mark as locked regardless to prevent accumulation loops
-            self._confirm_main_lock_alignment(hwnd_to_manage, (x, y, width, height), "attach")
-            self._set_main_lock_state(True, "attach completed, accepting current position.")
-            self._refresh_cycle_count = 0  # Reset to prevent further attempts
-            
+            self._retry_main_lock_alignment(hwnd_to_manage, (x, y, width, height), "attach")
             if slot == self.main_slot:
                 self._ensure_main_window_foreground()
         else:
@@ -1931,46 +1599,6 @@ class MainWindow(QMainWindow):
         self.setGeometry(available)
         self._is_custom_maximized = True
         self._schedule_geometry_refresh(40)
-
-    def _schedule_delayed_decoration_check(self, hwnd: int) -> None:
-        """Schedule a delayed check to remove decorations that Windows may have restored."""
-        if not self.embedder.is_window(hwnd):
-            return
-            
-        self._pending_decoration_check_hwnd = hwnd
-        self._decoration_check_timer.start(10000)  # 10 seconds delay
-        self._log_capture(f"Scheduled delayed decoration check for HWND {hwnd} in 10 seconds.")
-    
-    def _check_and_strip_delayed_decorations(self) -> None:
-        """Check for and remove decorations that may have been restored by Windows."""
-        if self._pending_decoration_check_hwnd is None:
-            return
-            
-        hwnd = self._pending_decoration_check_hwnd
-        self._pending_decoration_check_hwnd = None
-        
-        if not self.embedder.is_window(hwnd):
-            self._log_capture(f"Delayed decoration check skipped: HWND {hwnd} no longer valid.")
-            return
-            
-        # Check if window still has problematic decorations
-        if self.embedder.has_frame_controls(hwnd):
-            self._log_capture(f"Delayed decoration check: Found restored decorations on HWND {hwnd}, re-stripping...")
-            
-            # Get current style for logging
-            _, _, _, style, _ = self.embedder.get_window_state(hwnd)
-            self._log_capture(f"Window style before delayed strip: {style}")
-            
-            # Strip decorations again
-            success = self.embedder.strip_window_decorations(hwnd)
-            
-            if success:
-                _, _, _, new_style, _ = self.embedder.get_window_state(hwnd)
-                self._log_capture(f"Delayed decoration strip SUCCESS: style {style} -> {new_style}")
-            else:
-                self._log_capture(f"Delayed decoration strip FAILED for HWND {hwnd}")
-        else:
-            self._log_capture(f"Delayed decoration check: HWND {hwnd} decorations still clean, no action needed.")
 
     def _position_small_slot_swap_button(self) -> None:
         margin = 1
@@ -2001,52 +1629,6 @@ class MainWindow(QMainWindow):
         super().showEvent(event)
         self._constrain_to_available_geometry()
         self._schedule_geometry_refresh(40)
-
-    def changeEvent(self, event) -> None:  # type: ignore[override]
-        super().changeEvent(event)
-        
-        # Handle window state changes (minimize/restore)
-        if hasattr(event, 'type') and event.type() == event.Type.WindowStateChange:
-            if self.isMinimized():
-                # Application is being minimized - minimize game windows
-                self._minimize_game_windows()
-            elif not self.isMinimized() and hasattr(self, '_was_minimized') and self._was_minimized:
-                # Application is being restored - restore game windows
-                self._restore_game_windows()
-            
-            self._was_minimized = self.isMinimized()
-
-    def _minimize_game_windows(self) -> None:
-        """Minimize all game windows when the application is minimized."""
-        self._log_capture("Application minimized - minimizing game windows")
-        
-        if self.main_instance:
-            hwnd = self.main_instance.child_hwnd or self.main_instance.hwnd
-            if hwnd and self.embedder.is_window(hwnd):
-                self.embedder.minimize_window(hwnd)
-        
-        if self.small_instance:
-            hwnd = self.small_instance.child_hwnd or self.small_instance.hwnd
-            if hwnd and self.embedder.is_window(hwnd):
-                self.embedder.minimize_window(hwnd)
-
-    def _restore_game_windows(self) -> None:
-        """Restore all game windows when the application is restored."""
-        self._log_capture("Application restored - restoring game windows")
-        
-        if self.main_instance:
-            hwnd = self.main_instance.child_hwnd or self.main_instance.hwnd
-            if hwnd and self.embedder.is_window(hwnd):
-                self.embedder.restore_window(hwnd)
-                # Schedule a refresh to re-align the windows
-                self._schedule_geometry_refresh(100)
-        
-        if self.small_instance:
-            hwnd = self.small_instance.child_hwnd or self.small_instance.hwnd
-            if hwnd and self.embedder.is_window(hwnd):
-                self.embedder.restore_window(hwnd)
-                # Schedule a refresh to re-align the windows  
-                self._schedule_geometry_refresh(100)
 
     def _stop_instance(self, instance: GameInstance | None) -> None:
         if instance is None:
